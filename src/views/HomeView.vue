@@ -1,5 +1,7 @@
-<script setup lang="ts">
+<script setup>
+import GigaWei from '../components/GigaWei.vue'
 import { ref, onMounted, watch } from 'vue'
+import { publicClient } from '../utils/client.ts'
 import {
   getUserEthBalances,
   getUserGweiBalances,
@@ -12,7 +14,12 @@ import {
   getClaimableEthRewards,
   getNetBalance,
   depositEther,
+  withdrawEther,
+  depositGwei,
+  withdrawGwei,
 } from '../utils/bank.ts'
+import { getGweiAllowanceFor, approveAllowance } from '@/utils/gwei.ts'
+import { BANK_ADDRESS } from '@/utils/config.ts'
 import { useAuthStore } from '../stores/auth.ts'
 
 const auth = useAuthStore()
@@ -21,14 +28,21 @@ const userEthBalance = ref('-')
 const userGweiBalance = ref('-')
 const userEthDebt = ref('-')
 const userGweiDebt = ref('-')
+const userNetBalance = ref('-')
+
 const totalEth = ref('-')
 const totalGwei = ref('-')
 const borrowFee = ref('-')
 const collateralRatio = ref('-')
+
 const depositActive = ref()
 const depositAmount = ref()
-const depositOngoing = ref(false)
-const depositSuccess = ref(false)
+const depositStatus = ref(0)
+const withdrawActive = ref()
+const withdrawAmount = ref()
+const txStatus = ref(0)
+
+const mustApprove = ref(false)
 
 async function loadUserBalances() {
   const userAddress = auth.client[0]
@@ -44,6 +58,7 @@ async function loadUserBalances() {
   userGweiBalance.value = gwei_b > 0 ? Number(gwei_b) : 0
   userEthDebt.value = eth_d > 0 ? Number(eth_d) / 1e18 : 0
   userGweiDebt.value = gwei_d > 0 ? Number(gwei_d) : 0
+  userNetBalance.value = net > 0 ? Number(net) / 1e18 : 0
 }
 
 async function loadGlobalData() {
@@ -60,29 +75,102 @@ async function loadGlobalData() {
 
 async function deposit() {
   if (!depositAmount.value || depositAmount.value <= 0) alert('Add amount to deposit!')
+  let hash, receipt
+  txStatus.value = 1
   if (depositActive.value == 'ether') {
-    depositOngoing.value = true
-    const hash = await depositEther(depositAmount.value, auth.client[0])
-    depositOngoing.value = false
-    depositSuccess.value = true
-    setTimeout(() => {
-      depositSuccess.value = false
-      closeDeposit()
-      loadUserBalances()
-      loadGlobalData()
-    }, 2000)
-    console.log(hash)
+    hash = await depositEther(depositAmount.value, auth.client[0])
   } else {
-    console.log('No existe jajjajaj')
+    hash = await depositGwei(depositAmount.value, auth.client[0])
   }
+  receipt = await publicClient.waitForTransactionReceipt({
+    hash,
+  })
+  if (receipt.status == 'success') {
+    txStatus.value = 2
+  } else {
+    txStatus.value = 3
+  }
+  setTimeout(() => {
+    txStatus.value = 0
+    depositAmount.value = null
+    closeDeposit()
+    loadUserBalances()
+    loadGlobalData()
+  }, 2000)
+}
+
+async function getGweiAllowance() {
+  const amount = await getGweiAllowanceFor(auth.client[0], BANK_ADDRESS)
+  return amount
+}
+
+async function approveSpending() {
+  const hash = await approveAllowance(auth.client[0], BANK_ADDRESS, depositAmount.value)
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash,
+  })
+  if (receipt.status == 'success') {
+    mustApprove.value = false
+  }
+}
+
+async function checkMustApprove() {
+  const approved = await getGweiAllowance()
+  console.log(approved)
+  if (approved >= depositAmount.value) {
+    mustApprove.value = false
+  } else {
+    mustApprove.value = true
+  }
+}
+
+async function withdraw() {
+  if (!withdrawAmount.value || withdrawAmount.value <= 0) alert('Add amount to withdraw!')
+  txStatus.value = 1
+  let hash, receipt
+  if (withdrawActive.value == 'ether') {
+    hash = await withdrawEther(withdrawAmount.value, auth.client[0])
+  } else {
+    hash = await withdrawGwei(withdrawAmount.value, auth.client[0])
+  }
+
+  receipt = await publicClient.waitForTransactionReceipt({
+    hash,
+  })
+  if (receipt.status == 'success') {
+    txStatus.value = 2
+  } else {
+    txStatus.value = 3
+  }
+  setTimeout(() => {
+    txStatus.value = 0
+    closeDeposit()
+    loadUserBalances()
+    loadGlobalData()
+  }, 2000)
+  console.log(hash)
 }
 
 function closeDeposit() {
   depositActive.value = null
 }
 
+function closeWithdraw() {
+  withdrawActive.value = null
+}
+
 function closeDepositFromBG(event) {
   if (event.target.id == 'd_bg') depositActive.value = null
+}
+
+function closeWithdrawFromBG(event) {
+  if (event.target.id == 'w_bg') withdrawActive.value = null
+}
+
+function handleDepositInput() {
+  if (depositActive.value == 'giga wei') {
+    checkMustApprove()
+  }
 }
 
 watch(
@@ -93,50 +181,73 @@ watch(
 )
 
 onMounted(() => {
-  loadUserBalances()
   loadGlobalData()
+  loadUserBalances()
 })
 </script>
 
 <template>
   <main>
+    <div class="py-2 flex items-center">
+      <div>
+        <GigaWei></GigaWei>
+      </div>
+      <div></div>
+    </div>
     <div id="balances-table">
       <div class="table-head">
         <span class="strong">Assets</span>
         <span class="amount-col strong">Total deposits</span>
         <span class="amount-col strong">Your deposits</span>
         <span class="amount-col strong">Your borrows</span>
-        <span></span>
+        <span class="amount-col strong"></span>
       </div>
       <div class="table-row">
         <span>ETH</span>
         <span class="amount-col">{{ totalEth }}</span>
-        <span class="amount-col">{{ userEthBalance }}</span>
-        <span class="amount-col">{{ userEthDebt }}</span>
-        <div class="actions-div">
+        <div class="amount-col">
+          <span>{{ userEthBalance }} </span>
           <button @click="depositActive = 'ether'" class="d_btn">Deposit</button>
+        </div>
+        <div class="amount-col">
+          <span>{{ userEthDebt }} </span>
           <button class="b_btn">Borrow</button>
+        </div>
+
+        <div class="actions-div">
+          <button @click="withdrawActive = 'ether'" class="w_btn">Withdraw</button>
         </div>
       </div>
       <div class="table-row">
         <span>GWEI</span>
         <span class="amount-col">{{ totalGwei }}</span>
-        <span class="amount-col">{{ userGweiBalance }}</span>
-        <span class="amount-col">{{ userGweiDebt }}</span>
-        <div class="actions-div">
+        <div class="amount-col">
+          <span>{{ userGweiBalance }}</span>
           <button @click="depositActive = 'giga wei'" class="d_btn">Deposit</button>
+        </div>
+        <div class="amount-col">
+          <span>{{ userGweiDebt }}</span>
           <button class="b_btn">Borrow</button>
         </div>
-      </div>
-      <div class="info">
-        <div>
-          <span>Collateral ratio:</span>
-          <strong>{{ collateralRatio }}%</strong>
+        <div class="actions-div">
+          <button @click="withdrawActive = 'giga wei'" class="w_btn">Withdraw</button>
         </div>
-        <div></div>
+      </div>
+      <div class="info justify-between w-full">
+        <div class="flex gap-[10px]">
+          <div class="flex gap-2">
+            <span>Collateral ratio:</span>
+            <strong>{{ collateralRatio }}%</strong>
+          </div>
+          <div class="flex gap-2 ml-4">
+            <span>Borrow fee:</span>
+            <strong>{{ borrowFee }}%</strong>
+          </div>
+        </div>
         <div>
-          <span>Borrow fee:</span>
-          <strong>{{ borrowFee }}%</strong>
+          <span
+            >Net: <strong>{{ userNetBalance }} ETH</strong></span
+          >
         </div>
       </div>
     </div>
@@ -147,13 +258,36 @@ onMounted(() => {
         <h3>Deposit {{ depositActive }}</h3>
         <i @click="closeDeposit" class="fi fi-rr-cross flex hover:opacity-70 hover:cursor-pointer"></i>
       </div>
-      <input v-model="depositAmount" type="text" class="p-2 focus:outline-none bg-[var(--component-dark)] rounded text-[var(--text)]" placeholder="0.0" />
-      <button v-if="!depositOngoing && !depositSuccess" @click="deposit" class="p-2 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70">Deposit</button>
-      <button v-else-if="depositOngoing && !depositSuccess" class="p-3 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70 flex justify-center">
+      <input @input="handleDepositInput" v-model="depositAmount" type="text" class="p-2 focus:outline-none bg-[var(--component-dark)] rounded text-[var(--text)]" placeholder="0.0" />
+      <button v-if="depositStatus == 0 && !mustApprove" @click="deposit" class="p-2 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70">Deposit</button>
+      <button v-if="depositStatus == 0 && mustApprove" @click="approveSpending" class="p-2 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70">Approve</button>
+      <button v-else-if="depositStatus == 1" class="p-3 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70 flex justify-center">
         <i class="fi fi-rr-loading rotate flex w-min h-min"></i>
       </button>
-      <button v-else class="p-3 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70 flex justify-center">
+      <button v-else-if="depositStatus == 2" class="p-3 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70 flex justify-center">
         <i class="fi fi-rr-check flex w-min h-min"></i>
+      </button>
+      <button v-else-if="depositStatus == 3" class="p-3 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70 flex justify-center">
+        <i class="fi fi-rr-cross flex w-min h-min"></i>
+      </button>
+    </div>
+  </div>
+  <div @click="closeWithdrawFromBG" id="w_bg" class="deposit-bg" v-if="withdrawActive">
+    <div class="deposit-div p-2 rounded-[10px]">
+      <div class="text-[var(--text)] justify-between p-2">
+        <h3>Withdraw {{ withdrawActive }}</h3>
+        <i @click="closeWithdraw" class="fi fi-rr-cross flex hover:opacity-70 hover:cursor-pointer"></i>
+      </div>
+      <input v-model="withdrawAmount" type="text" class="p-2 focus:outline-none bg-[var(--component-dark)] rounded text-[var(--text)]" placeholder="0.0" />
+      <button v-if="txStatus == 0" @click="withdraw" class="p-2 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70">Withdraw</button>
+      <button v-else-if="txStatus == 1" class="p-3 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70 flex justify-center">
+        <i class="fi fi-rr-loading rotate flex w-min h-min"></i>
+      </button>
+      <button v-else-if="txStatus == 2" class="p-3 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70 flex justify-center">
+        <i class="fi fi-rr-check flex w-min h-min"></i>
+      </button>
+      <button v-else-if="txStatus == 3" class="p-3 bg-[var(--component)] text-[var(--text)] rounded hover:cursor-pointer hover:opacity-70 flex justify-center">
+        <i class="fi fi-rr-cross flex w-min h-min"></i>
       </button>
     </div>
   </div>
@@ -167,7 +301,13 @@ onMounted(() => {
     transform: rotate(360deg);
   }
 }
-
+.amount-col {
+  display: flex;
+  justify-content: space-between;
+  text-align: center;
+  align-items: center;
+  margin: 0 10px;
+}
 .rotate {
   animation: rotate 2s linear infinite;
 }
@@ -214,13 +354,10 @@ onMounted(() => {
   display: flex;
   gap: 10px;
 }
-.actions-div > button:hover {
-  opacity: 0.7;
-  cursor: pointer;
-}
+
 main {
   color: var(--text);
-  margin-top: 50px;
+  margin-top: 20px;
   width: 100%;
 }
 
@@ -262,6 +399,7 @@ main {
 }
 .table-row > * {
   flex: 1;
+  padding: 0 2%;
 }
 .table-head {
   display: flex;
@@ -273,8 +411,15 @@ main {
 }
 .table-head > * {
   flex: 1;
-}
-.amount-col {
   text-align: center;
+}
+.d_btn:hover,
+.w_btn:hover,
+.b_btn:hover {
+  opacity: 0.7;
+  cursor: pointer;
+}
+.w_btn {
+  color: var(--light-text);
 }
 </style>

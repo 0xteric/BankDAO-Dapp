@@ -64,3 +64,39 @@ export async function depositEther(amount: string, account: `0x${string}`) {
   const hash = await walletClient.writeContract(request)
   return hash
 }
+
+export async function withdrawEther(amount: string, account: `0x${string}`) {
+  const { request } = await publicClient.simulateContract({
+    address: BANK_ADDRESS,
+    abi: bankABI,
+    functionName: 'withdrawEther',
+    args: [parseEther(amount)],
+    account,
+  })
+  const hash = await walletClient.writeContract(request)
+  return hash
+}
+
+export async function depositGwei(amount: string, account: `0x${string}`) {
+  const { request } = await publicClient.simulateContract({
+    address: BANK_ADDRESS,
+    abi: bankABI,
+    functionName: 'depositGwei',
+    args: [amount],
+    account,
+  })
+  const hash = await walletClient.writeContract(request)
+  return hash
+}
+
+export async function withdrawGwei(amount: string, account: `0x${string}`) {
+  const { request } = await publicClient.simulateContract({
+    address: BANK_ADDRESS,
+    abi: bankABI,
+    functionName: 'withdrawGwei',
+    args: [amount],
+    account,
+  })
+  const hash = await walletClient.writeContract(request)
+  return hash
+}
